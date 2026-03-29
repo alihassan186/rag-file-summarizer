@@ -12,14 +12,9 @@ import httpx
 
 from app.config import settings
 from app.exceptions import SummaryGenerationError
+from app.file_types import is_pdf_file, is_text_file
 
 logger = logging.getLogger(__name__)
-
-_TEXT_EXTENSIONS = {
-    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm",
-    ".py", ".js", ".ts", ".yaml", ".yml", ".log", ".ini", ".cfg",
-}
-_PDF_EXTENSIONS = {".pdf"}
 
 _HF_API_URL = "https://api-inference.huggingface.co/models/{model}"
 
@@ -45,15 +40,13 @@ class HuggingFaceSummariser:
         content_type: str,
         size_bytes: int,
     ) -> Tuple[str, str]:
-        suffix = _get_extension(file_name)
-
-        if suffix in _PDF_EXTENSIONS or content_type == "application/pdf":
+        if is_pdf_file(file_name=file_name, content_type=content_type):
             text = _extract_pdf_text(file_bytes)
             if text:
                 return await self._summarise_text(text, file_name)
             return _metadata_summary(file_name, content_type, size_bytes), "metadata"
 
-        if suffix in _TEXT_EXTENSIONS or content_type.startswith("text/"):
+        if is_text_file(file_name=file_name, content_type=content_type):
             text = _decode_text(file_bytes)
             if text.strip():
                 return await self._summarise_text(text, file_name)
@@ -182,13 +175,6 @@ def _metadata_summary(file_name: str, content_type: str, size_bytes: int) -> str
         f"of type '{content_type}' with a size of {size_str}. "
         "Automatic text summarisation is not available for this file type."
     )
-
-
-def _get_extension(file_name: str) -> str:
-    from pathlib import Path
-
-    return Path(file_name).suffix.lower()
-
 
 def _human_readable_size(size_bytes: int) -> str:
     size = float(size_bytes)

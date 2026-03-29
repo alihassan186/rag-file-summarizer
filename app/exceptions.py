@@ -35,6 +35,13 @@ class FileStorageError(Exception):
     pass
 
 
+class EmptyFileError(Exception):
+    """Raised when an uploaded file contains no bytes."""
+
+    def __init__(self) -> None:
+        super().__init__("Uploaded file is empty")
+
+
 class SummaryGenerationError(Exception):
     """Raised when the LLM summarisation call fails."""
     pass
@@ -90,6 +97,17 @@ async def storage_error_handler(request: Request, exc: FileStorageError) -> JSON
             "error": "storage_error",
             "message": str(exc),
             "detail": "An unexpected error occurred while accessing the file store",
+        },
+    )
+
+
+async def empty_file_handler(request: Request, exc: EmptyFileError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "error": "empty_file",
+            "message": str(exc),
+            "detail": "Provide a non-empty file to upload",
         },
     )
 

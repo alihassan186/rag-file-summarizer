@@ -109,7 +109,7 @@ python -m app.main
 
 ```bash
 # Clone repository
-git clone git@github.com:alihassan186/intelligent-doc-hub.git
+git clone git@github.com:alihassan186/rag-file-summarizer.git
 cd <project-directory>
 
 # Create virtual environment

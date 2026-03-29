@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import io
 import logging
-from pathlib import Path
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+from app.file_types import is_pdf_file, is_text_file
+
 logger = logging.getLogger(__name__)
-
-TEXT_EXTENSIONS = {
-    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm",
-    ".py", ".js", ".ts", ".yaml", ".yml", ".log", ".ini", ".cfg",
-}
-
-PDF_EXTENSIONS = {".pdf"}
 
 
 class DocumentIngestion:
@@ -29,15 +23,13 @@ class DocumentIngestion:
         )
 
     def extract_text(self, file_bytes: bytes, file_name: str, content_type: str) -> str:
-        suffix = Path(file_name).suffix.lower()
-
-        if suffix in PDF_EXTENSIONS or content_type == "application/pdf":
+        if is_pdf_file(file_name=file_name, content_type=content_type):
             text = self._extract_pdf_text(file_bytes)
             if text:
                 return text
             raise ValueError("pdf_extraction_failed")
 
-        if suffix in TEXT_EXTENSIONS or content_type.startswith("text/"):
+        if is_text_file(file_name=file_name, content_type=content_type):
             decoded = file_bytes.decode("utf-8", errors="replace").strip()
             if not decoded:
                 raise ValueError("empty_text_after_decoding")

@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.exceptions import (
     EmbeddingGenerationError,
+    EmptyFileError,
     FileNotFoundError,
     FileStorageError,
     FileTooLargeError,
@@ -26,6 +27,7 @@ from app.exceptions import (
     RetrievalError,
     SummaryGenerationError,
     embedding_error_handler,
+    empty_file_handler,
     file_not_found_handler,
     file_too_large_handler,
     invalid_file_type_handler,
@@ -67,11 +69,9 @@ def create_app() -> FastAPI:
         title=settings.app_title,
         version=settings.app_version,
         description=(
-            "A lightweight file-sharing API that allows uploading, downloading, "
-            "listing, and AI-powered summarisation of files. "
-            "Built for ResMed's Cloud & AI Engineer take-home assignment."
+            "A file management API for uploading, listing, downloading, and "
+            "summarising documents with graceful AI-assisted fallbacks."
         ),
-        contact={"name": "Ali Hassan", "email": "alihasanuos@gmail.com"},
         lifespan=lifespan,
     )
 
@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(FileNotFoundError, file_not_found_handler)
     app.add_exception_handler(FileTooLargeError, file_too_large_handler)
     app.add_exception_handler(FileStorageError, storage_error_handler)
+    app.add_exception_handler(EmptyFileError, empty_file_handler)
     app.add_exception_handler(SummaryGenerationError, summary_error_handler)
     app.add_exception_handler(InvalidFileTypeError, invalid_file_type_handler)
     app.add_exception_handler(EmbeddingGenerationError, embedding_error_handler)

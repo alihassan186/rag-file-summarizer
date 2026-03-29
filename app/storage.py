@@ -17,7 +17,7 @@ import aiosqlite
 from fastapi import UploadFile
 
 from app.config import settings
-from app.exceptions import FileStorageError, FileTooLargeError
+from app.exceptions import EmptyFileError, FileStorageError, FileTooLargeError
 from app.models import FileMetadata
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ class LocalDiskStorage:
         self._db_path = db_path
 
     async def init_db(self) -> None:
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(CREATE_TABLE_SQL)
@@ -80,7 +81,7 @@ class LocalDiskStorage:
     ) -> FileMetadata:
         file_id = str(uuid.uuid4())
         uploaded_at = datetime.now(timezone.utc)
-        file_name = upload.filename or "unnamed"
+        file_name = _normalize_upload_filename(upload.filename)
         content_type = upload.content_type or "application/octet-stream"
 
         self._upload_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +107,12 @@ class LocalDiskStorage:
         except OSError as exc:
             dest_path.unlink(missing_ok=True)
             raise FileStorageError(f"Could not write file to disk: {exc}") from exc
+        finally:
+            await upload.close()
+
+        if size_bytes == 0:
+            dest_path.unlink(missing_ok=True)
+            raise EmptyFileError()
 
         try:
             async with aiosqlite.connect(self._db_path) as db:
@@ -190,6 +197,14 @@ def _row_to_metadata(row: aiosqlite.Row) -> FileMetadata:
         uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
         content_type=row["content_type"],
     )
+
+
+def _normalize_upload_filename(file_name: str | None) -> str:
+    if not file_name:
+        return "unnamed"
+
+    cleaned = Path(file_name).name.replace("\x00", "").strip()
+    return cleaned or "unnamed"
 
 
 def build_storage() -> LocalDiskStorage:

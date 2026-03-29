@@ -5,14 +5,20 @@ Keeping these in one place makes the API surface easy to audit and keeps
 FastAPI's auto-generated OpenAPI docs accurate.
 """
 from datetime import datetime
-from typing import List
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ApiModel(BaseModel):
+    """Base model that rejects unexpected fields in API contracts."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
-class UploadResponse(BaseModel):
+class UploadResponse(ApiModel):
     """Returned immediately after a successful file upload."""
 
     file_id: str = Field(..., description="UUID that uniquely identifies this file")
@@ -24,7 +30,7 @@ class UploadResponse(BaseModel):
 
 # ── Metadata ──────────────────────────────────────────────────────────────────
 
-class FileMetadata(BaseModel):
+class FileMetadata(ApiModel):
     """Metadata record stored for every uploaded file – no binary content."""
 
     file_id: str
@@ -34,16 +40,16 @@ class FileMetadata(BaseModel):
     content_type: str = Field(..., description="MIME type detected at upload time")
 
 
-class FileListResponse(BaseModel):
+class FileListResponse(ApiModel):
     """Response body for the list-all-files endpoint."""
 
     total: int = Field(..., description="Total number of files currently stored")
-    files: List[FileMetadata]
+    files: list[FileMetadata]
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-class FileSummaryResponse(BaseModel):
+class FileSummaryResponse(ApiModel):
     """LLM-generated human-readable summary for a given file."""
 
     file_id: str
@@ -51,11 +57,12 @@ class FileSummaryResponse(BaseModel):
     content_type: str
     size_bytes: int
     summary: str = Field(..., description="Human-readable summary produced by the LLM")
-    summary_source: str = Field(
+    summary_source: Literal["rag", "llm", "extractive", "metadata"] = Field(
         ...,
         description=(
-            "'rag' if generated via retrieval-augmented generation, "
-            "'extractive' if the HF token was not configured, "
+            "'rag' for retrieval-augmented generation, "
+            "'llm' for direct HF summarisation, "
+            "'extractive' for local fallback summaries, "
             "'metadata' for binary/unsupported file types"
         ),
     )
@@ -63,7 +70,7 @@ class FileSummaryResponse(BaseModel):
 
 # ── Error ─────────────────────────────────────────────────────────────────────
 
-class ErrorResponse(BaseModel):
+class ErrorResponse(ApiModel):
     """Standard error envelope returned on all 4xx / 5xx responses."""
 
     error: str = Field(..., description="Machine-readable error code")

@@ -97,6 +97,18 @@ async def test_upload_missing_file_field_returns_422(client):
     assert response.status_code == 422
 
 
+@pytest.mark.anyio
+async def test_upload_empty_file_returns_400(client):
+    """Zero-byte uploads should be rejected as invalid input."""
+    response = await client.post(
+        "/files/",
+        files={"file": ("empty.txt", io.BytesIO(b""), "text/plain")},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "empty_file"
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.anyio
@@ -171,6 +183,13 @@ async def test_download_unknown_id_returns_404(client):
     assert body["error"] == "file_not_found"
 
 
+@pytest.mark.anyio
+async def test_download_invalid_uuid_returns_422(client):
+    """Malformed file identifiers should fail FastAPI validation."""
+    response = await client.get("/files/not-a-uuid")
+    assert response.status_code == 422
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.anyio
@@ -214,6 +233,13 @@ async def test_summary_unknown_id_returns_404(client):
     response = await client.get("/files/00000000-0000-0000-0000-000000000000/summary")
     assert response.status_code == 404
     assert response.json()["error"] == "file_not_found"
+
+
+@pytest.mark.anyio
+async def test_summary_invalid_uuid_returns_422(client):
+    """Summary route should validate file identifiers before hitting the service."""
+    response = await client.get("/files/not-a-uuid/summary")
+    assert response.status_code == 422
 
 
 # ── Metadata integrity ────────────────────────────────────────────────────────

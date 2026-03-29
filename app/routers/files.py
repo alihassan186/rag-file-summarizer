@@ -8,12 +8,15 @@ Endpoints:
   GET  /files/{file_id}/summary – LLM-generated summary
 """
 import logging
+from uuid import UUID
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.models import (
+    ErrorResponse,
     FileListResponse,
     FileSummaryResponse,
     UploadResponse,
@@ -26,12 +29,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/files", tags=["Files"])
 
 
+def _build_content_disposition(file_name: str) -> str:
+    ascii_name = "".join(ch for ch in file_name if 32 <= ord(ch) < 127 and ch not in {'"', "\\"})
+    fallback = ascii_name or "download"
+    encoded = quote(file_name, safe="")
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
 # ── POST /files/ ──────────────────────────────────────────────────────────────
 
 @router.post(
     "/",
     response_model=UploadResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"model": ErrorResponse, "description": "Uploaded file is empty"},
+        413: {"model": ErrorResponse, "description": "Uploaded file exceeds size limit"},
+    },
     summary="Upload a file",
     description=(
         "Accepts a multipart/form-data upload. "
@@ -85,7 +99,7 @@ async def list_all_files(
     },
 )
 async def download_file(
-    file_id: str,
+    file_id: UUID,
     service: FileService = Depends(get_file_service),
 ) -> StreamingResponse:
     """Download the file associated with *file_id*.
@@ -93,13 +107,13 @@ async def download_file(
     The ``Content-Disposition`` header is set so browsers trigger a download
     with the original filename.
     """
-    metadata, stream = await service.get_download_stream(file_id)
+    metadata, stream = await service.get_download_stream(str(file_id))
 
     return StreamingResponse(
         content=stream,
         media_type=metadata.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{metadata.file_name}"',
+            "Content-Disposition": _build_content_disposition(metadata.file_name),
             "Content-Length": str(metadata.size_bytes),
         },
     )
@@ -119,11 +133,11 @@ async def download_file(
     ),
 )
 async def get_file_summary(
-    file_id: str,
+    file_id: UUID,
     service: FileService = Depends(get_file_service),
 ) -> FileSummaryResponse:
     """Return an LLM-generated summary for the file identified by *file_id*."""
-    metadata, summary_text, summary_source = await service.summarise_file(file_id)
+    metadata, summary_text, summary_source = await service.summarise_file(str(file_id))
 
     return FileSummaryResponse(
         file_id=metadata.file_id,
