@@ -1,0 +1,32 @@
+# Python dependencies for ResMed File Sharing API.
+# All versions are pinned for reproducible local and container builds.
+
+# === Runtime: API and request handling ===
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12  # Multipart form-data file uploads
+
+# === Runtime: validation and configuration ===
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# === Runtime: async I/O and storage ===
+aiofiles==24.1.0  # Async file read/write
+aiosqlite==0.20.0  # Async SQLite metadata store
+
+# === Runtime: HTTP client ===
+httpx==0.28.1  # Async HTTP client used by summarization and tests
+
+# === Runtime: RAG stack (free/open-source) ===
+langchain==0.3.12
+langchain-community==0.3.12
+huggingface_hub==1.8.0
+faiss-cpu==1.9.0.post1
+
+# === Runtime: document parsing ===
+pypdf==5.1.0
+
+# === Test dependencies ===
+pytest==8.3.4
+pytest-asyncio==0.24.0
+anyio[trio]==4.7.0
