@@ -1,6 +1,3 @@
-# Python dependencies for ResMed File Sharing API.
-# All versions are pinned for reproducible local and container builds.
-
 # === Runtime: API and request handling ===
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
