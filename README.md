@@ -1,834 +1,443 @@
-# ResMed File Sharing API with Intelligent RAG-Powered Summarization
+# ResMed File Sharing API
 
-A production-grade file management and intelligent summarization service built with FastAPI and Retrieval-Augmented Generation (RAG). Designed for educational document management with automatic intelligent summaries powered by free, open-source AI models.
+A production-oriented FastAPI service for uploading, listing, downloading, and summarizing files.
+
+The project combines:
+
+- Reliable file storage (local disk + SQLite metadata)
+- Retrieval-Augmented Generation (RAG) for document summaries
+- Graceful fallbacks when remote model inference is unavailable
+- Containerized deployment with Docker and docker-compose
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Usage](#usage)
-- [API Reference](#api-reference)
+- [Core Capabilities](#core-capabilities)
 - [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
 - [Configuration](#configuration)
-- [Deployment](#deployment)
-- [Testing](#testing)
+- [API Reference](#api-reference)
+- [Summarization and Fallback Strategy](#summarization-and-fallback-strategy)
+- [Running Tests](#running-tests)
+- [Docker Deployment](#docker-deployment)
 - [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
 
 ## Overview
 
-ResMed File Sharing API provides a secure, scalable file management system with built-in intelligent summarization capabilities. It implements a complete REST API for:
+This API exposes four file endpoints plus a health endpoint:
 
-- **File Management**: Upload, download, and list files with automatic metadata tracking
-- **Intelligent Summarization**: Automatic document summaries powered by RAG (Retrieval-Augmented Generation)
-- **Multi-format Support**: Text files (.txt) and PDF documents (.pdf)
-- **Robust Error Handling**: Structured error responses with actionable error codes
-- **Production Ready**: Docker containerization, comprehensive testing, and monitoring endpoints
+- `POST /files/` to upload a file
+- `GET /files/` to list metadata for uploaded files
+- `GET /files/{file_id}` to download a file stream
+- `GET /files/{file_id}/summary` to generate a summary
+- `GET /health` for runtime health checks
 
-## Features
+The summary endpoint is designed to stay useful under degraded conditions.
+If full RAG cannot run, the service falls back to extractive or metadata summaries depending on file type and available configuration.
 
-✅ **RESTful File API**
-- Upload files with automatic unique ID generation
-- Download files with streaming support
-- List all uploaded files with metadata
-- Vector-based document search and retrieval
+## Core Capabilities
 
-✅ **RAG-Powered Summarization**
-- Intelligent document understanding using modern language models
-- Automatic chunking and semantic search
-- Multi-step fallback pipeline for reliability
-- Section-aware extraction for structured documents
+1. File lifecycle management
+- Upload files through multipart form data
+- Persist metadata in SQLite
+- Stream downloads with proper content headers
 
-✅ **Production Features**
-- Async/await throughout for high performance
-- Structured error handling with consistent error contracts
-- SQLite metadata storage with persisted state
-- Local FAISS vector indexes for semantic search
-- Docker containerization for easy deployment
-- Comprehensive test coverage with 15+ test scenarios
+2. RAG-based summaries
+- Extract text from PDF and text-like files
+- Chunk content and build per-file FAISS indexes
+- Retrieve top relevant chunks and generate model-based summary
 
-✅ **Developer Friendly**
-- Automatic API documentation via Swagger UI
-- Clear separation of concerns with layered architecture
-- Type hints throughout (Python 3.12+)
-- Environment-based configuration
-- Pre-built docker-compose setup
+3. Graceful degradation
+- If HF token is not configured, falls back to local extractive summary
+- If file type is unsupported for text extraction, returns metadata summary
+- If generation/retrieval fails, applies fallback path instead of hard failure where possible
 
-## Prerequisites
+4. Production readiness
+- Structured domain exceptions and consistent error responses
+- Async file and database operations
+- Multi-stage Docker build with non-root runtime user
 
-- **Python 3.12+** or **Docker** (recommended)
-- **Hugging Face API Token** (free tier): [Get token](https://huggingface.co/settings/tokens)
-- **4GB RAM** minimum (for embeddings model)
-- **500MB disk space** for vector indexes and uploads
+## Architecture
 
-## Quick Start
+High-level request flow:
 
-### Using Docker (Recommended)
+![System Flow Diagram](doc/ResMed-2026-04-01-212006.png)
 
-```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd <project-directory>
+1. Router receives request (`app/routers/files.py`)
+2. Service layer orchestrates operations (`app/services/files_service.py`)
+3. Storage layer handles bytes + metadata (`app/storage.py`)
+4. RAG pipeline handles indexing/retrieval/generation (`app/rag/`)
+5. Fallback summarizer handles degraded paths (`app/summariser.py`)
 
-# 2. Create .env file with your Hugging Face token
-echo "HF_API_TOKEN=hf_your_token_here" > .env
+### RAG Indexing Lifecycle (Technical)
 
-# 3. Start the service
-docker compose up --build
+RAG indexing is triggered in two places:
 
-# 4. Test the API
-curl -X POST http://127.0.0.1:8000/files/ \
-  -F "file=@/path/to/document.pdf"
+1. Upload path (eager indexing):
+- `FileService.upload_file()` calls `_prepare_rag_index()` immediately after a successful save.
+- `_prepare_rag_index()` reads file bytes and calls `RagPipeline.ensure_index(...)`.
+
+2. Summary path (lazy safety check):
+- `FileService.summarise_file()` also calls `RagPipeline.ensure_index(...)` before retrieval.
+- If index is already present and compatible, `ensure_index(...)` returns quickly.
+
+Implementation sequence inside `RagPipeline.ensure_index(...)`:
+
+1. `DocumentIngestion.extract_text(...)` converts source bytes into text for supported types.
+2. `DocumentIngestion.chunk_text(...)` splits text into chunks using `RecursiveCharacterTextSplitter`.
+3. `VectorStoreManager.build_index(...)` converts chunks into embeddings and builds FAISS.
+4. `FAISS.save_local(...)` persists index artifacts to disk.
+
+On-disk index layout:
+
+- `data/vector_indexes/<file_id>/index.faiss`
+- `data/vector_indexes/<file_id>/index.pkl`
+- `data/vector_indexes/<file_id>/meta.json`
+
+### Summary Pipeline (GET `/files/{file_id}/summary`)
+
+1. Load metadata and file bytes
+2. Ensure vector index exists (build if missing)
+3. Retrieve relevant chunks via FAISS
+4. Generate summary with Hugging Face Inference API
+5. If needed, fallback to extractive summary or metadata summary
+
+## Tech Stack
+
+- Python 3.12
+- FastAPI + Uvicorn
+- Pydantic v2 + pydantic-settings
+- aiofiles + aiosqlite
+- LangChain + FAISS (CPU)
+- huggingface_hub InferenceClient
+- pypdf
+- pytest + pytest-asyncio + httpx
+- Docker + docker-compose
+
+## Project Structure
+
+```text
+.
+├── app/
+│   ├── main.py                  # FastAPI app factory, middleware, exception wiring
+│   ├── config.py                # Runtime settings from environment
+│   ├── deps.py                  # Dependency injection factories
+│   ├── exceptions.py            # Domain exceptions + JSON handlers
+│   ├── models.py                # API contracts
+│   ├── storage.py               # Local disk + SQLite storage implementation
+│   ├── summariser.py            # LLM + extractive + metadata fallback summarizer
+│   ├── routers/
+│   │   └── files.py             # File API endpoints
+│   ├── services/
+│   │   └── files_service.py     # Application service orchestration
+│   └── rag/
+│       ├── ingestion.py         # File text extraction and chunking
+│       ├── vector_store.py      # FAISS index build/search per file
+│       ├── generation.py        # Prompting + generation fallback logic
+│       ├── pipeline.py          # End-to-end RAG orchestration
+│       └── types.py             # RAG result dataclasses
+├── tests/
+│   ├── conftest.py              # Isolated async test client fixtures
+│   └── test_files.py            # Integration tests for all endpoints
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
 ```
 
-Visit [API Documentation](http://127.0.0.1:8000/docs) to explore interactive endpoints.
+## Getting Started
 
-### Local Development
+### Prerequisites
 
-```bash
-# 1. Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
+- Python 3.12+ or Docker
+- Optional but recommended: Hugging Face API token
 
-# 2. Install dependencies
-pip install -r requirements.txt
+Without `HF_API_TOKEN`, the app still works and will return extractive summaries for text/PDF where possible.
 
-# 3. Set environment variables
-export HF_API_TOKEN=hf_your_token_here
-
-# 4. Run the server
-python -m app.main
-```
-
-## Installation
-
-### From Source
+### Local Setup
 
 ```bash
-# Clone repository
-git clone git@github.com:alihassan186/rag-file-summarizer.git
-cd <project-directory>
-
-# Create virtual environment
 python3.12 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-
-# Verify installation
-pytest -q
 ```
 
-### Docker Installation
+Create `.env` in the project root:
+
+```env
+HF_API_TOKEN=
+DEBUG=false
+```
+
+Run the API:
 
 ```bash
-# Build image
-docker build -t resmed-api .
-
-# Run container
-docker run -it \
-  -e HF_API_TOKEN=hf_your_token \
-  -p 8000:8000 \
-  -v uploads:/app/uploads \
-  -v data:/app/data \
-  resmed-api
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## Usage
+Open API docs:
 
-### Upload a File
+- Swagger UI: http://127.0.0.1:8000/docs
+- ReDoc: http://127.0.0.1:8000/redoc
+
+## Configuration
+
+Settings are defined in `app/config.py` and can be overridden with environment variables.
+
+### Important Variables
+
+Storage and limits:
+
+- `UPLOAD_DIR` (default: `uploads`)
+- `DB_PATH` (default: `data/metadata.db`)
+- `VECTOR_STORE_DIR` (default: `data/vector_indexes`)
+- `MAX_FILE_SIZE_BYTES` (default: 20971520)
+
+Hugging Face and summary behavior:
+
+- `HF_API_TOKEN` (default: empty)
+- `HF_MODEL` (default: `facebook/bart-large-cnn`)
+- `HF_TIMEOUT_SECONDS` (default: 60)
+- `SUMMARY_MAX_INPUT_CHARS` (default: 3000)
+- `SUMMARY_MAX_OUTPUT_TOKENS` (default: 150)
+- `SUMMARY_MIN_OUTPUT_TOKENS` (default: 40)
+- `SUMMARY_STRICT_LLM` (default: false)
+
+RAG configuration:
+
+- `RAG_EMBEDDING_MODEL` (default: `sentence-transformers/all-mpnet-base-v2`)
+- `RAG_GENERATION_MODEL` (default: `google/flan-t5-base`)
+- `RAG_CHUNK_SIZE` (default: 900)
+- `RAG_CHUNK_OVERLAP` (default: 120)
+- `RAG_SUMMARY_TOP_K` (default: 10)
+- `RAG_MAX_DISTANCE` (default: 1.4)
+- `RAG_GENERATION_MAX_TOKENS` (default: 320)
+
+Application metadata:
+
+- `APP_TITLE` (default: `ResMed File Sharing API`)
+- `APP_VERSION` (default: `1.0.0`)
+- `DEBUG` (default: false)
+
+## API Reference
+
+Base URL examples assume `http://127.0.0.1:8000`.
+
+### Health
+
+`GET /health`
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
+}
+```
+
+### Upload File
+
+`POST /files/`
+
+Request (multipart form-data):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/files/ \
-  -F "file=@lecture-notes.pdf"
+  -F "file=@notes.txt"
 ```
 
-**Response (201 Created):**
+Success response (`201`):
+
 ```json
 {
-  "file_id": "3c384f6d-cffd-460f-8e06-77c2b102baac",
-  "file_name": "lecture-notes.pdf",
-  "size_bytes": 463266,
-  "uploaded_at": "2026-03-29T11:35:22.123456+00:00",
+  "file_id": "uuid",
+  "file_name": "notes.txt",
+  "size_bytes": 1234,
+  "uploaded_at": "2026-04-01T12:00:00+00:00",
   "message": "File uploaded successfully"
 }
 ```
 
-### List All Files
+Indexing behavior after upload:
 
-```bash
-curl http://127.0.0.1:8000/files/
-```
+- For supported files, the service attempts to build a per-file FAISS index right after storing metadata.
+- For unsupported file types, upload still succeeds; RAG indexing is skipped and summary falls back later.
+- If `HF_API_TOKEN` is not configured, RAG embeddings are disabled and summary uses fallback behavior.
 
-**Response (200 OK):**
+### List Files
+
+`GET /files/`
+
+Success response (`200`):
+
 ```json
 {
   "total": 1,
   "files": [
     {
-      "file_id": "3c384f6d-cffd-460f-8e06-77c2b102baac",
-      "file_name": "lecture-notes.pdf",
-      "size_bytes": 463266,
-      "uploaded_at": "2026-03-29T11:35:22.123456+00:00",
-      "content_type": "application/pdf"
+      "file_id": "uuid",
+      "file_name": "notes.txt",
+      "size_bytes": 1234,
+      "uploaded_at": "2026-04-01T12:00:00+00:00",
+      "content_type": "text/plain"
     }
   ]
 }
 ```
 
-### Download a File
+### Download File
+
+`GET /files/{file_id}`
 
 ```bash
-curl http://127.0.0.1:8000/files/3c384f6d-cffd-460f-8e06-77c2b102baac \
-  --output downloaded-notes.pdf
+curl http://127.0.0.1:8000/files/<file_id> --output downloaded.bin
 ```
 
-### Generate Summary
+Returns binary stream with `Content-Disposition` and `Content-Length` headers.
 
-```bash
-curl http://127.0.0.1:8000/files/3c384f6d-cffd-460f-8e06-77c2b102baac/summary
-```
+### Get Summary
 
-**Response (200 OK):**
-```json
-{
-  "file_id": "3c384f6d-cffd-460f-8e06-77c2b102baac",
-  "file_name": "lecture-notes.pdf",
-  "content_type": "application/pdf",
-  "size_bytes": 463266,
-  "summary": "- Key topic A\n- Key topic B\n- Key topic C",
-  "summary_source": "rag"
-}
-```
+`GET /files/{file_id}/summary`
 
-## API Reference
+Success response (`200`):
 
-### File Management Endpoints
-
-#### POST `/files/`
-
-Upload a new file to the system.
-
-**Parameters:**
-- `file` (FormData, required): Binary file content (max 20MB)
-
-**Request:**
-```bash
-curl -X POST http://127.0.0.1:8000/files/ \
-  -F "file=@document.pdf"
-```
-
-**Response (201 Created):**
 ```json
 {
   "file_id": "uuid",
-  "file_name": "document.pdf",
-  "size_bytes": 123456,
-  "uploaded_at": "2026-03-29T11:35:22.123456+00:00",
-  "message": "File uploaded successfully"
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: No file provided
-- `413 Payload Too Large`: File exceeds 20MB limit
-- `500 Internal Server Error`: Storage or indexing failed
-
----
-
-#### GET `/files/`
-
-List all uploaded files with pagination support.
-
-**Query Parameters:**
-- `skip` (integer, default: 0): Pagination offset
-- `limit` (integer, default: 100): Maximum results to return
-
-**Request:**
-```bash
-curl "http://127.0.0.1:8000/files/?skip=0&limit=10"
-```
-
-**Response (200 OK):**
-```json
-{
-  "total": 42,
-  "files": [
-    {
-      "file_id": "uuid",
-      "file_name": "lecture-notes.pdf",
-      "size_bytes": 463266,
-      "uploaded_at": "2026-03-29T11:35:22.123456+00:00",
-      "content_type": "application/pdf"
-    }
-  ],
-  "skip": 0,
-  "limit": 10
-}
-```
-
----
-
-#### GET `/files/{file_id}`
-
-Download a file by ID with streaming support.
-
-**Path Parameters:**
-- `file_id` (string, required): Unique file identifier
-
-**Request:**
-```bash
-curl http://127.0.0.1:8000/files/3c384f6d-cffd-460f-8e06-77c2b102baac \
-  --output downloaded.pdf
-```
-
-**Response (200 OK):**
-- Binary file content with appropriate `Content-Type` and `Content-Disposition` headers
-
-**Error Responses:**
-- `404 Not Found`: File ID does not exist
-
----
-
-#### GET `/files/{file_id}/summary`
-
-Generate an intelligent summary of a file using RAG pipeline.
-
-**Path Parameters:**
-- `file_id` (string, required): Unique file identifier
-
-**Request:**
-```bash
-curl http://127.0.0.1:8000/files/3c384f6d-cffd-460f-8e06-77c2b102baac/summary
-```
-
-**Response (200 OK):**
-```json
-{
-  "file_id": "3c384f6d-cffd-460f-8e06-77c2b102baac",
-  "file_name": "lecture-notes.pdf",
-  "content_type": "application/pdf",
-  "size_bytes": 463266,
-  "summary": "Structured bullet-point summary of key topics",
+  "file_name": "notes.txt",
+  "content_type": "text/plain",
+  "size_bytes": 1234,
+  "summary": "...",
   "summary_source": "rag"
 }
 ```
 
-**Response (200 OK) - Fallback Mode:**
-```json
-{
-  "file_id": "3c384f6d-cffd-460f-8e06-77c2b102baac",
-  "file_name": "presentation.pptx",
-  "content_type": "application/vnd.ms-powerpoint",
-  "size_bytes": 1234567,
-  "summary": "File metadata summary (format not supported for full RAG)",
-  "summary_source": "metadata"
-}
-```
+`summary_source` is one of:
 
-**Error Responses:**
-- `404 Not Found`: File ID does not exist
-- `500 Internal Server Error`: Summarization pipeline failed
+- `rag` for successful RAG generation
+- `llm` for direct non-RAG Hugging Face summarization path
+- `extractive` for local extractive fallback
+- `metadata` for unsupported/binary file fallback
 
----
+### Error Envelope
 
-### Error Response Format
-
-All error responses follow a consistent structure:
+All domain errors follow this format:
 
 ```json
 {
-  "error": "error_code",
-  "message": "Human-readable error message",
-  "detail": "Additional context or debugging information"
+  "error": "machine_readable_code",
+  "message": "Human-readable message",
+  "detail": "Optional detail"
 }
 ```
 
-**Common Error Codes:**
-- `file_not_found`: Requested file does not exist
-- `file_too_large`: Uploaded file exceeds size limit
-- `invalid_file_type`: File format not supported
-- `storage_error`: Failed to store file
-- `retrieval_error`: RAG pipeline retrieval failed
-- `generation_error`: Summary generation failed
-- `embedding_error`: Vector embedding generation failed
+Common status codes:
 
+- `400` empty upload
+- `404` missing file
+- `413` upload too large
+- `415` unsupported media type for RAG ingestion
+- `422` validation errors (e.g. malformed UUID)
+- `500` storage/embedding failures
+- `502` retrieval/generation downstream failures
 
+## Summarization and Fallback Strategy
 
-## Architecture
+The service intentionally supports multiple summarization modes.
 
-### System Architecture Diagram
+### Primary Path
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Client Layer                              │
-│                  (Swagger UI / cURL / SDK)                        │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │
-┌────────────────────────▼─────────────────────────────────────────┐
-│                      FastAPI Router                               │
-│            (Automatic OpenAPI documentation)                      │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │
-┌────────────────────────▼─────────────────────────────────────────┐
-│                   Service Layer (Orchestration)                   │
-│                      FileService                                  │
-└──────────┬──────────────────────────────────────────┬─────────────┘
-           │                                          │
-    ┌──────▼──────────┐                    ┌──────────▼──────────┐
-    │ Storage Layer   │                    │ RAG Pipeline        │
-    ├─────────────────┤                    ├────────────────────┤
-    │ Local Disk I/O  │                    │ 1. Ingestion       │
-    │ SQLite DB       │                    │    - PDF extraction │
-    │ - File bytes    │                    │    - Text parsing   │
-    │ - Metadata      │                    │                    │
-    │ - Type info     │                    │ 2. Chunking        │
-    │                 │                    │    - Token aware    │
-    │                 │                    │    - Context aware  │
-    └─────────────────┘                    │                    │
-                                           │ 3. Embeddings      │
-                                           │    - HF Inference   │
-                                           │    - all-mpnet-v2   │
-                                           │                    │
-                                           │ 4. Vector Store    │
-                                           │    - FAISS (CPU)    │
-                                           │    - Local indexes  │
-                                           │                    │
-                                           │ 5. Generation      │
-                                           │    - text_generation│
-                                           │    - flan-t5-base   │
-                                           │    - Fallback logic │
-                                           │                    │
-                                           │ 6. Fallback        │
-                                           │    - Extractive    │
-                                           │    - Section-aware  │
-                                           └────────────────────┘
-```
+1. Ingest text from file (`pdf` or text-like content)
+2. Build/load file-scoped FAISS index
+3. Retrieve top relevant chunks
+4. Generate concise answer via Hugging Face model
 
-### Data Flow for Summary Generation
+### Chunking and FAISS Details
 
-```
-User Request (GET /files/{file_id}/summary)
-    │
-    ├─→ [1] Load file metadata from SQLite
-    │   └─→ Verify file exists
-    │
-    ├─→ [2] Ensure vector index exists
-    │   ├─→ Check FAISS index compatibility
-    │   └─→ Rebuild if embedding model changed
-    │
-    ├─→ [3] Retrieve relevant chunks
-    │   ├─→ Query FAISS for top-k similar chunks
-    │   ├─→ Filter by relevance threshold
-    │   └─→ Return top chunks for context
-    │
-    ├─→ [4] Generate summary
-    │   ├─→ Format context with prompt
-    │   ├─→ Call HF text_generation endpoint
-    │   └─→ Retry with shrinking payloads if needed
-    │
-    ├─→ [5] Fallback paths (if generation fails)
-    │   ├─→ Try HF summarization task
-    │   ├─→ Extractive bullet-point summary
-    │   └─→ Return metadata fallback
-    │
-    └─→ Return JSON response with summary + source
-```
+- Chunking implementation: `app/rag/ingestion.py` via `RecursiveCharacterTextSplitter`.
+- Chunk config keys: `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`.
+- FAISS build/persist: `app/rag/vector_store.py` (`FAISS.from_documents(...)` + `save_local(...)`).
+- Retrieval call: `VectorStoreManager.search(...)` using `similarity_search_with_score(...)`.
+- Index compatibility check: `meta.json` stores embedding model; incompatible indexes are rebuilt.
 
-### Technology Stack
+### Fallback Paths
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Framework** | FastAPI 0.115+ | High-performance async web framework |
-| **Server** | Uvicorn 0.32+ | ASGI application server |
-| **Language** | Python 3.12+ | Modern Python with type hints |
-| **Database** | SQLite + aiosqlite | Lightweight async metadata store |
-| **File I/O** | aiofiles | Non-blocking file operations |
-| **Vector Search** | FAISS (CPU) | Efficient semantic search |
-| **LLM Client** | huggingface_hub | Free HF Inference API client |
-| **Embeddings** | sentence-transformers | Semantic vector generation |
-| **PDF Processing** | pypdf | Cross-platform PDF parsing |
-| **Validation** | Pydantic v2 | Type-safe request/response validation |
-| **Testing** | pytest + pytest-asyncio | Comprehensive test coverage |
-| **Container** | Docker | Production deployment |
-| **Orchestration** | docker-compose | Local development stack |
+1. If RAG ingestion is unsupported for file type:
+- Use `HuggingFaceSummariser` directly (`llm`, `extractive`, or `metadata`)
 
-## Configuration
+2. If RAG runtime fails:
+- With token configured, propagate retrieval/generation failure (`502`)
+- Without token, degrade to local summarizer fallback
 
-### Environment Variables
+3. If direct Hugging Face summarization fails:
+- Return extractive summary unless `SUMMARY_STRICT_LLM=true`
 
-Create a `.env` file in the project root:
+4. If content is binary/unsupported:
+- Return metadata-based summary
 
-```env
-# Hugging Face API Token (get from https://huggingface.co/settings/tokens)
-HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx
+## Running Tests
 
-# RAG Configuration
-RAG_EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
-RAG_GENERATION_MODEL=google/flan-t5-base
-RAG_SUMMARY_TOP_K=10
-RAG_GENERATION_MAX_TOKENS=320
-
-# Server Configuration
-DEBUG=false
-HOST=0.0.0.0
-PORT=8000
-
-# Storage Configuration
-MAX_UPLOAD_SIZE_MB=20
-STORAGE_PATH=/app/data
-UPLOADS_PATH=/app/uploads
-```
-
-### Environment Variable Reference
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HF_API_TOKEN` | N/A | **Required**. Hugging Face API token for inference |
-| `RAG_EMBEDDING_MODEL` | sentence-transformers/all-mpnet-base-v2 | HF model for semantic embeddings |
-| `RAG_GENERATION_MODEL` | google/flan-t5-base | HF model for text generation |
-| `RAG_SUMMARY_TOP_K` | 10 | Number of chunks to retrieve for context |
-| `RAG_GENERATION_MAX_TOKENS` | 320 | Maximum tokens in generated summary |
-| `DEBUG` | false | Enable verbose logging and debug endpoints |
-| `HOST` | 0.0.0.0 | Server bind address |
-| `PORT` | 8000 | Server port |
-| `MAX_UPLOAD_SIZE_MB` | 20 | Maximum upload file size |
-
-### Storage Paths
-
-The system uses the following directory structure:
-
-```
-project_root/
-├── uploads/                    # Raw uploaded file bytes
-│   └── {file_id}              # One file per ID
-├── data/
-│   ├── metadata.db            # SQLite metadata store
-│   └── vector_indexes/        # FAISS vector indexes
-│       └── {file_id}/
-│           ├── index.faiss    # Binary FAISS index
-│           ├── index.pkl      # Pickle serialized index
-│           └── meta.json      # Metadata & model info
-```
-
-All paths are configurable via environment variables and persist across container restarts.
-
-## Deployment
-
-### Docker Deployment
-
-The project includes a production-grade Dockerfile with multi-stage build:
+Run full test suite:
 
 ```bash
-# Build and run with docker-compose
-docker compose up --build
-
-# Or build manually
-docker build -t resmed-api .
-docker run -d \
-  --name resmed-api \
-  -p 8000:8000 \
-  -e HF_API_TOKEN=hf_xxx \
-  -v uploads:/app/uploads \
-  -v data:/app/data \
-  resmed-api
-```
-
-### Production Checklist
-
-- [ ] Rotate HF_API_TOKEN from .env to CI/CD secret manager
-- [ ] Enable DEBUG=false in production
-- [ ] Configure persistent volumes for uploads/ and data/
-- [ ] Set up log aggregation (e.g., ELK, Datadog)
-- [ ] Enable HTTPS/TLS termination at load balancer
-- [ ] Configure rate limiting for /files/ endpoint
-- [ ] Set up alerting on /health endpoint
-- [ ] Use container's built-in security context (non-root user)
-- [ ] Enable database backups for metadata.db
-
-### Health Check
-
-The API includes a health endpoint for monitoring:
-
-```bash
-curl http://127.0.0.1:8000/health
-# Response: {"status": "ok"}
-```
-
-## Testing
-
-### Run All Tests
-
-```bash
-# Quick test run
 pytest -q
-
-# Verbose output with coverage
-pytest -v --cov=app
-
-# Run specific test file
-pytest tests/test_files.py -v
-
-# Run with markers
-pytest -m "not slow" -v
 ```
 
-### Test Coverage
-
-The test suite includes 15+ test scenarios covering:
-
-- ✅ File upload (valid file, oversized file, unique IDs)
-- ✅ File listing (empty list, pagination, multiple files)
-- ✅ File download (byte accuracy, content-type headers, 404)
-- ✅ Summary generation (RAG mode, fallback mode, error handling)
-- ✅ Metadata integrity (stored vs retrieved)
-- ✅ Error contracts (structured error responses)
-- ✅ Storage persistence (SQLite, FAISS indexes)
-
-### Test Isolation
-
-Tests use temporary directories and mocked HF tokens to ensure:
-- No interference between test runs
-- No external API dependencies
-- Fast, repeatable test execution
-- Safe cleanup after failure
+Verbose mode:
 
 ```bash
-# Run tests with verbose fixture output
-pytest -v -s tests/test_files.py
-
-# Run with custom temporary directory
-TMPDIR=/tmp pytest tests/test_files.py
+pytest -v
 ```
+
+The tests use isolated temporary directories and disable Hugging Face access by default.
+
+## Docker Deployment
+
+### docker-compose
+
+```bash
+docker compose up --build
+```
+
+Service exposure:
+
+- API on `8000`
+- Persistent named volumes for uploads and metadata/index data
+
+### Dockerfile Notes
+
+- Multi-stage build for reduced runtime image size
+- Non-root runtime user (`appuser`)
+- Built-in healthcheck on `/health`
 
 ## Troubleshooting
 
-### Common Issues
+### `413 Payload Too Large`
 
-#### Issue: "File too large" error on upload
+- Increase `MAX_FILE_SIZE_BYTES` in environment
+- Restart service
 
-**Error:** `413 Payload Too Large` 
+### Summary returns extractive output unexpectedly
 
-**Solution:**
-```bash
-# Check current limit in .env
-grep MAX_UPLOAD_SIZE_MB .env
+- Confirm `HF_API_TOKEN` is set
+- Check outbound network access to Hugging Face
+- Inspect logs for model/API errors
 
-# Increase to 50MB
-echo "MAX_UPLOAD_SIZE_MB=50" >> .env
-docker compose restart
-```
+### Summary returns metadata output
 
----
+- File is likely binary or unsupported for text extraction
+- Use text or PDF input for richer summarization
 
-#### Issue: Summary generation times out
+### Vector index errors after model change
 
-**Error:** `Response timeout from Hugging Face API`
+- Delete file-specific index directory under `data/vector_indexes/<file_id>`
+- Re-trigger summary to rebuild index with current embedding model
 
-**Solution:**
-1. Verify HF_API_TOKEN is valid: https://huggingface.co/settings/tokens
-2. Check HF service status: https://status.huggingface.co
-3. Reduce RAG_SUMMARY_TOP_K (fewer chunks):
-   ```env
-   RAG_SUMMARY_TOP_K=5
-   ```
-4. Reduce RAG_GENERATION_MAX_TOKENS:
-   ```env
-   RAG_GENERATION_MAX_TOKENS=200
-   ```
+## Notes
 
----
-
-#### Issue: Vector index rebuild fails
-
-**Error:** `Embedding generation failed`
-
-**Solution:**
-- Stale indexes are auto-detected and rebuilt on next summary request
-- Force rebuild by deleting index:
-  ```bash
-  rm -rf data/vector_indexes/{file_id}
-  ```
-- Verify embedding model is available on HuggingFace:
-  ```bash
-  curl https://api-inference.huggingface.co/models/sentence-transformers/all-mpnet-base-v2 \
-    -H "Authorization: Bearer $HF_API_TOKEN"
-  ```
-
----
-
-#### Issue: PDF parsing errors
-
-**Error:** `Failed to extract text from PDF`
-
-**Solution:**
-1. Verify PDF is not corrupted:
-   ```bash
-   file your-document.pdf
-   ```
-2. Check if scanned PDF (requires OCR - not supported):
-   - Use extracted text instead
-   - Use online OCR service first
-3. Check PDF version compatibility (pypdf supports most versions)
-
----
-
-#### Issue: Swagger UI not loading
-
-**Error:** `Cannot GET /docs`
-
-**Solution:**
-```bash
-# Verify server is running
-curl http://127.0.0.1:8000/health
-
-# Check logs
-docker logs resmed-api
-
-# Restart service
-docker compose restart api
-```
-
----
-
-### Debug Mode
-
-Enable verbose logging:
-
-```bash
-# Set DEBUG environment variable
-export DEBUG=true
-
-# Restart service
-docker compose restart
-
-# View logs
-docker compose logs -f api
-```
-
-Debug output includes:
-- Full API request/response payloads
-- RAG pipeline step timings
-- Model loading events
-- File I/O operations
-
-## Repository Structure
-
-```
-project_root/
-├── app/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI app factory & exception handlers
-│   ├── config.py               # Pydantic Settings configuration
-│   ├── deps.py                 # Dependency injection setup
-│   ├── exceptions.py           # Domain exception definitions
-│   ├── models.py               # Pydantic request/response models
-│   ├── storage.py              # LocalDiskStorage implementation
-│   ├── summariser.py           # Fallback summarization logic
-│   ├── routers/
-│   │   └── files.py            # 4 file management endpoints
-│   ├── services/
-│   │   └── files_service.py    # Orchestration layer
-│   └── rag/
-│       ├── __init__.py
-│       ├── ingestion.py        # PDF/text extraction & chunking
-│       ├── vector_store.py     # FAISS index management
-│       ├── generation.py       # LLM summary generation
-│       ├── pipeline.py         # RAG orchestration
-│       └── types.py            # Type definitions
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py             # pytest fixtures
-│   └── test_files.py           # 15+ integration tests
-├── Dockerfile                  # Multi-stage production build
-├── docker-compose.yml          # Local dev orchestration
-├── requirements.txt            # Python dependencies
-├── .env.example                # Environment template
-└── README.md                   # This file
-```
-
-## Performance & Optimization
-
-### Summary Generation Performance
-
-- **Typical latency**: 2-8 seconds (depends on file size and HF API latency)
-- **Vector search**: < 100ms (local FAISS)
-- **Bottleneck**: Usually HF API response time (free tier ~3-5s)
-
-### Optimization Tips
-
-1. **Increase chunk retrieval efficiency:**
-   ```env
-   RAG_SUMMARY_TOP_K=5  # Fewer chunks = faster generation
-   ```
-
-2. **Reduce generation time:**
-   ```env
-   RAG_GENERATION_MAX_TOKENS=150  # Shorter summaries
-   ```
-
-3. **Cache vector indexes:**
-   - Indexes persist in `data/vector_indexes/`
-   - Reuse across requests (no re-embedding needed)
-
-4. **Use smaller files for testing:**
-   - PDF < 10MB recommended
-   - Large files may timeout on free HF tier
-
-## Contributing
-
-### Development Setup
-
-```bash
-
-# Create feature branch
-git checkout -b feature/your-feature
-
-# Install dev dependencies
-pip install -r requirements.txt
-pip install pytest-cov black ruff mypy
-
-# Run tests before committing
-pytest -v
-
-# Format code
-black app/ tests/
-ruff check app/ tests/
-
-# Type check
-mypy app/
-```
-
-### Pull Request Checklist
-
-- [ ] Tests pass: `pytest -v`
-- [ ] Code formatted: `black .`
-- [ ] Lints pass: `ruff check .`
-- [ ] Types validated: `mypy app/`
-- [ ] Updated README if needed
-- [ ] Descriptive commit message
-- [ ] No credentials in code
-
-### Reporting Issues
-
-Use GitHub Issues with:
-- Clear reproduction steps
-- Expected vs actual behavior
-- Python version and OS
-- Relevant logs (with credentials redacted)
-
-## License
-
-This project is provided as-is for educational purposes. See LICENSE file for details.
-
-## Support
-
-- 📖 **Documentation**: See this README
-- 💬 **Issues**: GitHub Issues
-- 📧 **Email Support**: Available upon request
-- 🔗 **Related Projects**: [FastAPI Docs](https://fastapi.tiangolo.com/), [LangChain](https://python.langchain.com/)
+- This repository currently exposes file operations and summarization APIs.
+- The RAG pipeline module also includes an internal question-answering capability not currently exposed as an HTTP endpoint.
