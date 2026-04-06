@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 900
     rag_chunk_overlap: int = 120
     rag_embedding_model: str = "sentence-transformers/all-mpnet-base-v2"
-    rag_generation_model: str = "google/flan-t5-base"
+    rag_generation_model: str = "distilgpt2"
     rag_summary_query: str = (
         "Provide the most important concepts, definitions, and conclusions "
         "from this document"

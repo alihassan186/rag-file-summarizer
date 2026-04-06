@@ -69,7 +69,11 @@ class RagGenerator:
             output = self._generate_summary_with_retries(safe_context)
             return self._format_summary(output), "rag"
         except Exception as exc:
-            logger.warning("RAG summary generation failed; falling back to extractive: %s", exc)
+            logger.warning(
+                "RAG summary generation failed; falling back to extractive: %s: %r",
+                type(exc).__name__,
+                exc,
+            )
             return self._extractive_summary(raw_context), "extractive"
 
     def answer_question(self, question: str, contexts: Iterable[str]) -> tuple[str, str]:
@@ -85,7 +89,11 @@ class RagGenerator:
             output = self._generate_text_with_retries(prompt=prompt, text_fallback=context)
             return self._normalize_whitespace(output), "rag"
         except Exception as exc:
-            logger.warning("RAG question answering failed; falling back to extractive: %s", exc)
+            logger.warning(
+                "RAG question answering failed; falling back to extractive: %s: %r",
+                type(exc).__name__,
+                exc,
+            )
             return self._fallback_answer(question, context), "extractive"
 
     def _generate_summary_with_retries(self, context: str) -> str:
@@ -94,9 +102,9 @@ class RagGenerator:
 
     def _generate_text_with_retries(self, prompt: str, text_fallback: str) -> str:
         prompt_candidates = [self._truncate_input(prompt)]
-        if len(prompt) > 1500:
+        if len(prompt) > 15000:
             prompt_candidates.append(prompt[:1500].rstrip())
-        if len(prompt) > 1000:
+        if len(prompt) > 10000:
             prompt_candidates.append(prompt[:1000].rstrip())
 
         last_exc: Exception | None = None
@@ -107,12 +115,17 @@ class RagGenerator:
                 last_exc = exc
                 continue
 
-        logger.warning("Prompt-based generation failed; trying summarization fallback: %s", last_exc)
+        logger.warning(
+            "Prompt-based generation failed; trying summarization fallback: %s: %r",
+            type(last_exc).__name__ if last_exc else "UnknownError",
+            last_exc,
+        )
         return self._summarize_with_retries(self._truncate_input(text_fallback))
 
     def _generate_text(self, prompt: str) -> str:
         if not self._client:
             return ""
+
         result = self._client.text_generation(
             prompt,
             model=settings.rag_generation_model,
@@ -120,12 +133,27 @@ class RagGenerator:
             do_sample=False,
             return_full_text=False,
         )
-        return str(result).strip()
+        # Handle various response types from InferenceClient
+        if hasattr(result, 'generated_text'):
+            # TextGenerationResponse object
+            text = result.generated_text
+        elif isinstance(result, str):
+            # Direct string response
+            text = result
+        elif isinstance(result, dict) and 'generated_text' in result:
+            # Dict response (some model configurations)
+            text = result['generated_text']
+        else:
+            # Fallback: convert to string
+            text = str(result)
+        
+        return text.strip() if text else ""
 
     def _summarize(self, text: str) -> str:
         if not self._client:
             return ""
-        result = self._client.summarization(text, model=settings.rag_generation_model)
+        # Keep summarization fallback separate from RAG generation model.
+        result = self._client.summarization(text, model=settings.hf_model)
         return result.summary_text
 
     def _summarize_with_retries(self, text: str) -> str:
